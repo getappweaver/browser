@@ -1,0 +1,13 @@
+{
+  "name": "dm-bot-browser-plugin",
+  "version": "1.0.1",
+  "dmBot": {
+    "coreApiVersion": "^8.0.0",
+    "description": "Browser automation plugin — AI-driven multi-tab task execution"
+  },
+  "description": "Browser automation plugin — AI-driven multi-tab task execution",
+  "type": "module",
+  "scripts": {
+    "contrib:setup": "chmod +x ../../scripts/commit-msg ../../scripts/post-commit ../../scripts/ngit-helper.sh && git config core.hooksPath ../../scripts"
+  }
+}
