@@ -1,8 +1,8 @@
 {
   "name": "dm-bot-browser-plugin",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "dmBot": {
-    "coreApiVersion": "^8.0.0",
+    "coreApiVersion": "^9.0.0",
     "description": "Browser automation plugin — AI-driven multi-tab task execution"
   },
   "description": "Browser automation plugin — AI-driven multi-tab task execution",

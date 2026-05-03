@@ -137,6 +137,78 @@ class BrowserService {
     return page;
   }
 
+  /**
+   * Recover a tab for a task on resume, in priority order:
+   * 1. Existing in-memory tab that is still open.
+   * 2. Any open page in the persistent context whose hostname matches lastUrl.
+   * 3. A fresh tab, optionally navigated to lastUrl.
+   */
+  async findOrRecoverTab(
+    config: BrowserRuntimeConfig,
+    tabId: string,
+    lastUrl: string | null,
+  ): Promise<Page> {
+    const existing = this.pages.get(tabId);
+
+    if (existing && !existing.isClosed()) {
+      log.info(`browser: reusing in-memory tab ${tabId}`);
+
+      return existing;
+    }
+
+    if (lastUrl) {
+      let targetHostname: string | null = null;
+
+      try {
+        targetHostname = new URL(lastUrl).hostname;
+      } catch {
+        // malformed URL — skip hostname matching
+      }
+
+      if (targetHostname) {
+        const ctx = await this.getContext(config);
+
+        const match = ctx.pages().find((p) => {
+          if (p.isClosed()) {
+            return false;
+          }
+
+          try {
+            return new URL(p.url()).hostname === targetHostname;
+          } catch {
+            return false;
+          }
+        });
+
+        if (match) {
+          this.pages.set(tabId, match);
+
+          log.info(
+            `browser: recovered tab ${tabId} from existing page at ${match.url()}`,
+          );
+
+          return match;
+        }
+      }
+    }
+
+    const page = await this.openTab(config, tabId);
+
+    if (lastUrl) {
+      await page
+        .goto(lastUrl, { waitUntil: 'domcontentloaded' })
+        .catch(() => undefined);
+
+      await settlePage(page);
+
+      log.info(
+        `browser: opened fresh tab ${tabId} and navigated to ${lastUrl}`,
+      );
+    }
+
+    return page;
+  }
+
   async closeTab(tabId: string): Promise<void> {
     const page = this.pages.get(tabId);
 

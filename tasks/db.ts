@@ -28,12 +28,20 @@ export function createTasksTable(db: Database): void {
       status       TEXT    NOT NULL DEFAULT 'pending',
       session_id   TEXT,
       tab_id       TEXT,
+      last_url     TEXT,
       max_actions  INTEGER NOT NULL DEFAULT ${DEFAULT_MAX_ACTIONS},
       actions_used INTEGER NOT NULL DEFAULT 0,
       created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
       updated_at   TEXT    NOT NULL DEFAULT (datetime('now'))
     )
   `);
+
+  // Migration: add last_url to existing databases that predate this column.
+  try {
+    db.run(`ALTER TABLE tasks ADD COLUMN last_url TEXT`);
+  } catch {
+    // Column already exists — no-op.
+  }
 }
 
 export function createTaskEventsTable(db: Database): void {
@@ -62,6 +70,10 @@ function rowToTask(row: Record<string, unknown>): Task {
     status: String(row.status) as TaskStatus,
     session_id: row.session_id === null ? null : String(row.session_id),
     tab_id: row.tab_id === null ? null : String(row.tab_id),
+    last_url:
+      row.last_url === null || row.last_url === undefined
+        ? null
+        : String(row.last_url),
     max_actions: Number(row.max_actions),
     actions_used: Number(row.actions_used),
     created_at: String(row.created_at),
@@ -222,6 +234,19 @@ export function setTaskTabId({ db, id, tabId }: SetTaskTabIdProps): void {
   );
 }
 
+type SetTaskLastUrlProps = {
+  db: Database;
+  id: number;
+  lastUrl: string;
+};
+
+export function setTaskLastUrl({ db, id, lastUrl }: SetTaskLastUrlProps): void {
+  db.run(
+    `UPDATE tasks SET last_url = ?, updated_at = datetime('now') WHERE id = ?`,
+    [lastUrl, id],
+  );
+}
+
 export function incrementActionsUsed(db: Database, taskId: number): void {
   db.run(
     `UPDATE tasks SET actions_used = actions_used + 1, updated_at = datetime('now') WHERE id = ?`,
@@ -254,6 +279,27 @@ export function normalizeStaleRunningTasks(db: Database): void {
       text: 'Task interrupted by restart; awaiting user instruction.',
     });
   }
+}
+
+// ---------------------------------------------------------------------------
+// Bulk delete
+// ---------------------------------------------------------------------------
+
+export function clearAllTasks(db: Database): { tasks: number; events: number } {
+  const eventCount = (
+    db.prepare('SELECT COUNT(*) as n FROM task_events').get() as {
+      n: number;
+    }
+  ).n;
+
+  const taskCount = (
+    db.prepare('SELECT COUNT(*) as n FROM tasks').get() as { n: number }
+  ).n;
+
+  db.run('DELETE FROM task_events');
+  db.run('DELETE FROM tasks');
+
+  return { tasks: taskCount, events: eventCount };
 }
 
 // ---------------------------------------------------------------------------

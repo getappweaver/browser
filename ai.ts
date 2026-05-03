@@ -1,11 +1,13 @@
+import { z } from 'zod';
+
+import type { AiDefinition } from '@src/system/ai-definition';
+
 // ---------------------------------------------------------------------------
 // plugins/browser/ai.ts — Browser CLI tools exposed to sub-agents
 //
 // Sub-agents call: bun src/cli.ts browser <toolName> '<json>'
 // These tools interact with the plugin-owned BrowserService singleton.
 // ---------------------------------------------------------------------------
-
-import { z } from 'zod';
 
 import { openDb } from './db';
 import {
@@ -105,6 +107,17 @@ export type BrowserToolCall = z.infer<typeof BrowserToolCallSchema>;
 export { BrowserToolCallSchema as ToolCallSchema };
 export const skillDescription =
   'Browser automation via local dm-bot CLI tools. Use these to control browser tabs, navigate, click, type, and inspect pages.';
+
+export const aiDefinition = {
+  toolCallSchema: BrowserToolCallSchema,
+  skillDescription,
+  openDb,
+  executeTool,
+} satisfies AiDefinition<
+  typeof BrowserToolCallSchema,
+  BrowserToolCall,
+  ReturnType<typeof openDb>
+>;
 
 // ---------------------------------------------------------------------------
 // Task ID helpers

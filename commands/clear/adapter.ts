@@ -1,21 +1,16 @@
 import type { Database } from 'bun:sqlite';
 
-import type {
-  PluginContext,
-  PluginIdentity,
-  RunAgentFn,
-} from '@src/core/plugin';
+import type { PluginIdentity, RunAgentFn } from '@src/core/plugin';
 import type { MessageSource } from '@src/messaging';
 import type { CommandDefinition } from '@src/system/command-definition';
 import type { ParsedCliInvocation } from '@src/system/parser-cli';
 
 import type { BrowserRenderable } from '../shared/render';
 import { BrowserReplyMessage } from '../shared/reply';
-import { stringFromVariadicArgument } from '../shared/variadic-text';
 
-import { handleRunCommand } from './handler';
+import { handleClearCommand } from './handler';
 
-export async function adaptRunCommand(params: {
+export function adaptClearCommand(params: {
   prefix: string;
   alias: string;
   db: Database;
@@ -24,24 +19,19 @@ export async function adaptRunCommand(params: {
   runAgent: RunAgentFn;
   parsed: ParsedCliInvocation;
   command: CommandDefinition;
-  storedCtx: PluginContext;
-}): Promise<BrowserRenderable> {
+}): BrowserRenderable {
+  void params.prefix;
+  void params.parsed;
   void params.command;
+  void params.source;
   void params.identity;
+  void params.runAgent;
 
-  const prompt = stringFromVariadicArgument(params.parsed.arguments['prompt']);
-
-  const text = await handleRunCommand({
-    db: params.db,
-    ctx: params.storedCtx,
-    runAgent: params.runAgent,
-    prompt,
-    source: params.source,
-  });
+  const text = handleClearCommand({ db: params.db });
 
   return BrowserReplyMessage({
     alias: params.alias,
-    subcommand: 'run',
+    subcommand: 'clear',
     text,
   });
 }

@@ -9,6 +9,7 @@ import { z } from 'zod';
 import { createBackend } from '@src/backends/factory';
 import { getOutputString } from '@src/backends/types';
 import type { PluginContext, RunAgentFn } from '@src/core/plugin';
+import type { MessageSource } from '@src/messaging';
 import { dmBotRoot } from '@src/paths';
 
 import {
@@ -97,7 +98,8 @@ async function callMasterAi({
   const backend = createBackend({
     backendName: defaults.backend,
     dmBotRoot,
-    mode: 'ask',
+    cursorMode: 'ask',
+    opencodeAgentName: 'ask',
     attachUrl: process.env.BOT_OPENCODE_SERVE_URL ?? null,
     modelOverride: defaults.model,
     providerName: defaults.provider,
@@ -108,7 +110,8 @@ async function callMasterAi({
   const result = await backend.runMessage({
     sessionId,
     content: prompt,
-    mode: 'ask',
+    cursorMode: 'ask',
+    opencodeAgentName: 'ask',
     cwd: dmBotRoot,
     getRoutstrSkKey: ctx.getRoutstrSkKey,
     modelOverride: defaults.model,
@@ -140,6 +143,7 @@ type ExecuteDecisionProps = {
   db: Database;
   ctx: PluginContext;
   userMessage: string;
+  source: MessageSource;
 };
 
 async function executeDecision({
@@ -147,6 +151,7 @@ async function executeDecision({
   db,
   ctx,
   userMessage,
+  source,
 }: ExecuteDecisionProps): Promise<string> {
   if (decision.decision === 'NOTHING') {
     return 'No action needed.';
@@ -212,7 +217,7 @@ async function executeDecision({
       return `Task #${taskId} has no parent — cannot resume.`;
     }
 
-    void executeSequentialLoop({
+    const resumeLoopPromise = executeSequentialLoop({
       db,
       ctx,
       rootTaskId: parentId,
@@ -220,7 +225,17 @@ async function executeDecision({
       resumeContext: userMessage,
     });
 
-    return `Resuming "${target.title}"…`;
+    if (source === 'nostr') {
+      void resumeLoopPromise;
+
+      return `Resuming "${target.title}"…`;
+    }
+
+    const resumeResult = await resumeLoopPromise;
+
+    return [`Resuming "${target.title}"…`, resumeResult]
+      .filter(Boolean)
+      .join('\n\n');
   }
 
   if (decision.decision === 'CREATE_NEW' && decision.new_root !== null) {
@@ -246,7 +261,10 @@ async function executeDecision({
       });
     }
 
-    void executeSequentialLoop({
+    const subList = sub_tasks.map((s) => `  • ${s.title}`).join('\n');
+    const startingMsg = `Starting "${title}" with ${sub_tasks.length} sub-task${sub_tasks.length > 1 ? 's' : ''}:\n${subList}`;
+
+    const loopPromise = executeSequentialLoop({
       db,
       ctx,
       rootTaskId: rootTask.id,
@@ -254,9 +272,15 @@ async function executeDecision({
       resumeContext: null,
     });
 
-    const subList = sub_tasks.map((s) => `  • ${s.title}`).join('\n');
+    if (source === 'nostr') {
+      void loopPromise;
 
-    return `Starting "${title}" with ${sub_tasks.length} sub-task${sub_tasks.length > 1 ? 's' : ''}:\n${subList}\n\nI'll notify you as each one completes or if any need your input.`;
+      return `${startingMsg}\n\nI'll notify you as each one completes or if any need your input.`;
+    }
+
+    const loopResult = await loopPromise;
+
+    return [startingMsg, loopResult].filter(Boolean).join('\n\n');
   }
 
   return 'Could not determine what to do. Try being more specific.';
@@ -271,6 +295,7 @@ type HandleMasterDecisionProps = {
   ctx: PluginContext;
   runAgent: RunAgentFn;
   userMessage: string;
+  source: MessageSource;
 };
 
 export async function handleMasterDecision({
@@ -278,6 +303,7 @@ export async function handleMasterDecision({
   ctx,
   runAgent,
   userMessage,
+  source,
 }: HandleMasterDecisionProps): Promise<string> {
   const decision = await callMasterAi({ userMessage, db, ctx, runAgent });
 
@@ -285,5 +311,5 @@ export async function handleMasterDecision({
     return 'Sorry, I could not parse a decision from the AI. Please try rephrasing.';
   }
 
-  return executeDecision({ decision, db, ctx, userMessage });
+  return executeDecision({ decision, db, ctx, userMessage, source });
 }

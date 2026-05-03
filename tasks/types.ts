@@ -24,6 +24,7 @@ export const TaskSchema = z.object({
   status: TaskStatusSchema,
   session_id: z.string().nullable(),
   tab_id: z.string().nullable(),
+  last_url: z.string().nullable(),
   max_actions: z.number(),
   actions_used: z.number(),
   created_at: z.string(),

@@ -1,6 +1,6 @@
 // ---------------------------------------------------------------------------
 // plugins/browser/orchestrator/runner.ts
-// Sequential sub-task execution loop.
+// In-process sequential browser step loop.
 // ---------------------------------------------------------------------------
 
 import type { Database } from 'bun:sqlite';
@@ -16,64 +16,30 @@ import {
   incrementActionsUsed,
   insertTaskEvent,
   listChildTasks,
-  setTaskSessionId,
+  setTaskLastUrl,
   setTaskTabId,
   updateTaskStatus,
 } from '../tasks/db';
 import type { Task } from '../tasks/types';
 
+import { DEFAULT_BROWSER_CONFIG, getBrowserService } from './browser-service';
 import {
   notifyCheckpoint,
   notifyRunSummary,
   notifyTaskComplete,
   notifyTaskFailed,
 } from './notifications';
-import { buildSubAgentSystemPrompt } from './prompts';
+import { buildStepPrompt, parseStepDecision } from './prompts';
 
-const CHECKPOINT_MARKER = 'CHECKPOINT_NEEDED:';
-const COMPLETE_MARKER = 'TASK_COMPLETE:';
-const FAILED_MARKER = 'TASK_FAILED:';
+const MAX_STEP_MS = 60_000;
 
 function tabIdForTask(taskId: number): string {
   return `task-${taskId}`;
 }
 
-function parseMarker(
-  output: string,
-): { type: 'checkpoint' | 'complete' | 'failed'; message: string } | null {
-  const lines = output.split('\n').map((l) => l.trim());
-
-  for (const line of lines) {
-    if (line.includes(CHECKPOINT_MARKER)) {
-      const idx = line.indexOf(CHECKPOINT_MARKER);
-
-      return {
-        type: 'checkpoint',
-        message: line.slice(idx + CHECKPOINT_MARKER.length).trim(),
-      };
-    }
-
-    if (line.includes(COMPLETE_MARKER)) {
-      const idx = line.indexOf(COMPLETE_MARKER);
-
-      return {
-        type: 'complete',
-        message: line.slice(idx + COMPLETE_MARKER.length).trim(),
-      };
-    }
-
-    if (line.includes(FAILED_MARKER)) {
-      const idx = line.indexOf(FAILED_MARKER);
-
-      return {
-        type: 'failed',
-        message: line.slice(idx + FAILED_MARKER.length).trim(),
-      };
-    }
-  }
-
-  return null;
-}
+// ---------------------------------------------------------------------------
+// Single sub-task step loop
+// ---------------------------------------------------------------------------
 
 type RunSubTaskProps = {
   db: Database;
@@ -87,25 +53,23 @@ async function runSubTask({
   ctx,
   task,
   resumeContext,
-}: RunSubTaskProps): Promise<void> {
+}: RunSubTaskProps): Promise<string> {
   const tabId = tabIdForTask(task.id);
+  const service = getBrowserService();
+  const config = DEFAULT_BROWSER_CONFIG;
   const { defaults } = ctx;
 
   const backend = createBackend({
     backendName: defaults.backend,
     dmBotRoot,
-    mode: defaults.mode,
+    cursorMode: 'ask',
+    opencodeAgentName: 'ask',
     attachUrl: process.env.BOT_OPENCODE_SERVE_URL ?? null,
     modelOverride: defaults.model,
     providerName: defaults.provider,
   });
 
-  let sessionId = task.session_id;
-
-  if (!sessionId) {
-    sessionId = await backend.createSession(dmBotRoot);
-    setTaskSessionId({ db, id: task.id, sessionId });
-  }
+  const sessionId = await backend.createSession(dmBotRoot);
 
   setTaskTabId({ db, id: task.id, tabId });
   updateTaskStatus({ db, id: task.id, status: 'running' });
@@ -117,117 +81,178 @@ async function runSubTask({
     kind: 'status',
     text: resumeContext
       ? `Resuming: ${resumeContext}`
-      : `Starting sub-task: ${task.title}`,
+      : `Starting: ${task.title}`,
   });
 
-  const prompt = resumeContext
-    ? `${buildSubAgentSystemPrompt({ task, tabId, maxActions: task.max_actions - task.actions_used })}\n\n## Resuming\n${resumeContext}`
-    : buildSubAgentSystemPrompt({ task, tabId, maxActions: task.max_actions });
+  // Initialise or recover the browser tab.
+  const page = resumeContext
+    ? await service.findOrRecoverTab(config, tabId, task.last_url)
+    : await service.openTab(config, tabId);
 
-  const result = await backend.runMessage({
-    sessionId,
-    content: prompt,
-    mode: defaults.mode,
-    cwd: dmBotRoot,
-    getRoutstrSkKey: ctx.getRoutstrSkKey,
-    modelOverride: defaults.model,
-    onAgentStreamChunk: null,
-    streamAbortSignal: null,
-  });
+  let snapshot = await service.snapshot(config, tabId);
 
-  const output = getOutputString(result).trim();
+  if (snapshot.url && snapshot.url !== 'about:blank') {
+    setTaskLastUrl({ db, id: task.id, lastUrl: snapshot.url });
+  }
+
+  let feedback = resumeContext
+    ? `Resumed. User message: ${resumeContext}\nCurrent page: ${snapshot.url}`
+    : `Browser tab opened. Current page: ${snapshot.url}`;
+
+  void page; // page reference kept alive via service map
+
+  const remainingBudget = task.max_actions - task.actions_used;
+
+  for (let step = 1; step <= remainingBudget; step++) {
+    const prompt = buildStepPrompt({
+      task,
+      step,
+      remainingActions: remainingBudget - step + 1,
+      feedback,
+      snapshot,
+    });
+
+    const abortController = new AbortController();
+    const timeout = setTimeout(() => abortController.abort(), MAX_STEP_MS);
+
+    const result = await backend
+      .runMessage({
+        sessionId,
+        content: prompt,
+        cursorMode: 'ask',
+        opencodeAgentName: 'ask',
+        cwd: dmBotRoot,
+        getRoutstrSkKey: ctx.getRoutstrSkKey,
+        modelOverride: defaults.model,
+        onAgentStreamChunk: null,
+        streamAbortSignal: abortController.signal,
+      })
+      .finally(() => clearTimeout(timeout));
+
+    const raw = getOutputString(result).trim();
+    const decision = parseStepDecision(raw);
+
+    if (!decision || result.type === 'error') {
+      const reason =
+        result.type === 'error'
+          ? result.output
+          : `Step ${step}: AI response could not be parsed as a valid action.`;
+
+      updateTaskStatus({ db, id: task.id, status: 'failed' });
+
+      insertTaskEvent({
+        db,
+        task_id: task.id,
+        role: 'system',
+        kind: 'status',
+        text: `Failed: ${reason}`,
+      });
+
+      return notifyTaskFailed({ sendDm: ctx.sendDm, task, reason });
+    }
+
+    if (decision.type === 'final') {
+      updateTaskStatus({ db, id: task.id, status: 'completed' });
+
+      insertTaskEvent({
+        db,
+        task_id: task.id,
+        role: 'system',
+        kind: 'status',
+        text: `Completed: ${decision.message}`,
+      });
+
+      return notifyTaskComplete({
+        sendDm: ctx.sendDm,
+        task,
+        summary: decision.message,
+      });
+    }
+
+    if (decision.type === 'prompt_user') {
+      updateTaskStatus({ db, id: task.id, status: 'waiting' });
+
+      insertTaskEvent({
+        db,
+        task_id: task.id,
+        role: 'system',
+        kind: 'status',
+        text: `Waiting: ${decision.message}`,
+      });
+
+      return notifyCheckpoint({
+        sendDm: ctx.sendDm,
+        task,
+        reason: decision.message,
+      });
+    }
+
+    // Execute browser action in-process.
+    try {
+      const actionResult = await service.runAction(
+        config,
+        tabId,
+        decision.action,
+      );
+
+      // Snapshot is free; only count real interactions.
+      if (decision.action.type !== 'snapshot') {
+        incrementActionsUsed(db, task.id);
+      }
+
+      snapshot = actionResult.snapshot;
+
+      if (snapshot.url && snapshot.url !== 'about:blank') {
+        setTaskLastUrl({ db, id: task.id, lastUrl: snapshot.url });
+      }
+
+      const actionLine = decision.comment
+        ? `${actionResult.summary} (${decision.comment})`
+        : actionResult.summary;
+
+      insertTaskEvent({
+        db,
+        task_id: task.id,
+        role: 'assistant',
+        kind: 'message',
+        text: `Step ${step}: ${actionLine}`,
+      });
+
+      feedback = `Last action succeeded: ${actionLine}`;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+
+      feedback = `Last action failed: ${reason}`;
+
+      insertTaskEvent({
+        db,
+        task_id: task.id,
+        role: 'system',
+        kind: 'message',
+        text: `Step ${step} error: ${reason}`,
+      });
+    }
+  }
+
+  // Budget exhausted.
+  const reason = `Exceeded action budget of ${task.max_actions}.`;
+
+  updateTaskStatus({ db, id: task.id, status: 'failed' });
 
   insertTaskEvent({
     db,
     task_id: task.id,
-    role: 'assistant',
-    kind: 'message',
-    text: output.slice(0, 2000),
+    role: 'system',
+    kind: 'status',
+    text: `Failed: ${reason}`,
   });
 
-  incrementActionsUsed(db, task.id);
-
-  const parsed = parseMarker(output);
-
-  if (!parsed || result.type === 'error') {
-    const reason =
-      result.type === 'error'
-        ? result.output
-        : 'Sub-agent did not return a completion marker.';
-
-    updateTaskStatus({ db, id: task.id, status: 'failed' });
-
-    insertTaskEvent({
-      db,
-      task_id: task.id,
-      role: 'system',
-      kind: 'status',
-      text: `Failed: ${reason}`,
-    });
-
-    await notifyTaskFailed({ sendDm: ctx.sendDm, task, reason });
-
-    return;
-  }
-
-  if (parsed.type === 'complete') {
-    updateTaskStatus({ db, id: task.id, status: 'completed' });
-
-    insertTaskEvent({
-      db,
-      task_id: task.id,
-      role: 'system',
-      kind: 'status',
-      text: `Completed: ${parsed.message}`,
-    });
-
-    await notifyTaskComplete({
-      sendDm: ctx.sendDm,
-      task,
-      summary: parsed.message,
-    });
-
-    return;
-  }
-
-  if (parsed.type === 'checkpoint') {
-    updateTaskStatus({ db, id: task.id, status: 'waiting' });
-
-    insertTaskEvent({
-      db,
-      task_id: task.id,
-      role: 'system',
-      kind: 'status',
-      text: `Waiting: ${parsed.message}`,
-    });
-
-    await notifyCheckpoint({
-      sendDm: ctx.sendDm,
-      task,
-      reason: parsed.message,
-    });
-
-    return;
-  }
-
-  if (parsed.type === 'failed') {
-    updateTaskStatus({ db, id: task.id, status: 'failed' });
-
-    insertTaskEvent({
-      db,
-      task_id: task.id,
-      role: 'system',
-      kind: 'status',
-      text: `Failed: ${parsed.message}`,
-    });
-
-    await notifyTaskFailed({
-      sendDm: ctx.sendDm,
-      task,
-      reason: parsed.message,
-    });
-  }
+  return notifyTaskFailed({ sendDm: ctx.sendDm, task, reason });
 }
+
+// ---------------------------------------------------------------------------
+// Sequential orchestration loop (unchanged contract)
+// ---------------------------------------------------------------------------
 
 type ExecuteSequentialLoopProps = {
   db: Database;
@@ -243,17 +268,12 @@ export async function executeSequentialLoop({
   rootTaskId,
   resumeTaskId,
   resumeContext,
-}: ExecuteSequentialLoopProps): Promise<void> {
+}: ExecuteSequentialLoopProps): Promise<string> {
   if (resumeTaskId !== null) {
     const taskToResume = getTask(db, resumeTaskId);
 
     if (taskToResume && taskToResume.status === 'waiting') {
-      await runSubTask({
-        db,
-        ctx,
-        task: taskToResume,
-        resumeContext,
-      });
+      await runSubTask({ db, ctx, task: taskToResume, resumeContext });
     }
   }
 
@@ -270,6 +290,8 @@ export async function executeSequentialLoop({
   const failed = children.filter((t) => t.status === 'failed');
 
   if (completed.length > 0 || waiting.length > 0 || failed.length > 0) {
-    await notifyRunSummary({ sendDm: ctx.sendDm, completed, waiting, failed });
+    return notifyRunSummary({ sendDm: ctx.sendDm, completed, waiting, failed });
   }
+
+  return '';
 }

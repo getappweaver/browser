@@ -1,6 +1,8 @@
 // ---------------------------------------------------------------------------
 // plugins/browser/orchestrator/notifications.ts
 // DM notification helpers for browser task events.
+// All functions send via sendDm AND return the message string so callers
+// can surface it inline when the source is not 'nostr'.
 // ---------------------------------------------------------------------------
 
 import type { SendReplyFn } from '@src/core/plugin';
@@ -17,10 +19,12 @@ export async function notifyCheckpoint({
   sendDm,
   task,
   reason,
-}: NotifyCheckpointProps): Promise<void> {
-  await sendDm(
-    `[browser] "${task.title}" is waiting for your input.\n\nReason: ${reason}\n\nThe browser tab is open — please take the required action there and then let me know when you're ready to continue.`,
-  );
+}: NotifyCheckpointProps): Promise<string> {
+  const msg = `[browser] "${task.title}" is waiting for your input.\n\nReason: ${reason}\n\nThe browser tab is open — please take the required action there and then let me know when you're ready to continue.`;
+
+  await sendDm(msg);
+
+  return msg;
 }
 
 type NotifyTaskCompleteProps = {
@@ -33,8 +37,12 @@ export async function notifyTaskComplete({
   sendDm,
   task,
   summary,
-}: NotifyTaskCompleteProps): Promise<void> {
-  await sendDm(`[browser] "${task.title}" is done.\n\n${summary}`);
+}: NotifyTaskCompleteProps): Promise<string> {
+  const msg = `[browser] "${task.title}" is done.\n\n${summary}`;
+
+  await sendDm(msg);
+
+  return msg;
 }
 
 type NotifyTaskFailedProps = {
@@ -47,10 +55,12 @@ export async function notifyTaskFailed({
   sendDm,
   task,
   reason,
-}: NotifyTaskFailedProps): Promise<void> {
-  await sendDm(
-    `[browser] "${task.title}" failed.\n\nReason: ${reason}\n\nYou can retry with /browser run or ask me to skip this task.`,
-  );
+}: NotifyTaskFailedProps): Promise<string> {
+  const msg = `[browser] "${task.title}" failed.\n\nReason: ${reason}\n\nYou can retry with /browser run or ask me to skip this task.`;
+
+  await sendDm(msg);
+
+  return msg;
 }
 
 type NotifyRunSummaryProps = {
@@ -65,7 +75,7 @@ export async function notifyRunSummary({
   completed,
   waiting,
   failed,
-}: NotifyRunSummaryProps): Promise<void> {
+}: NotifyRunSummaryProps): Promise<string> {
   const lines: string[] = ['[browser] Execution pass complete.\n'];
 
   if (completed.length > 0) {
@@ -86,5 +96,9 @@ export async function notifyRunSummary({
     );
   }
 
-  await sendDm(lines.join('\n'));
+  const msg = lines.join('\n');
+
+  await sendDm(msg);
+
+  return msg;
 }

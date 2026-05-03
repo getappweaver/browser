@@ -15,6 +15,7 @@ import {
 import type { WebNodeRoot } from '@src/web/ui-schema';
 
 import { handleBrowserAdapter } from './adapter';
+import { aiDefinition } from './ai';
 import {
   getBrowserCommandDefinition,
   getBrowserHelpLines,
@@ -75,6 +76,7 @@ export const BrowserPlugin: BotPlugin = {
     `${prefix}${helpAlias} help [topic] — structured help`,
     ...getBrowserHelpLines(prefix, helpAlias),
   ],
+  aiDefinition,
   commandDefinition: (prefix: string, pluginAlias: string) =>
     getBrowserCommandDefinition(prefix, pluginAlias),
 };

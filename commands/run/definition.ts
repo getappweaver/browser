@@ -10,10 +10,11 @@ export const runDefinition = (
   arguments: [
     {
       name: 'prompt',
+      summary:
+        'Natural language instruction — what to do, or a response to a waiting task.',
+      kind: 'string',
       required: true,
       variadic: true,
-      description:
-        'Natural language instruction — what to do, or a response to a waiting task.',
     },
   ],
   options: [],

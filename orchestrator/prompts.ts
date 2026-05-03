@@ -1,9 +1,11 @@
 // ---------------------------------------------------------------------------
 // plugins/browser/orchestrator/prompts.ts
-// System prompts for the Master AI and sub-agent AI.
+// System prompts for the Master AI and per-step browser runner.
 // ---------------------------------------------------------------------------
 
 import type { Task, TaskEvent } from '../tasks/types';
+
+import type { BrowserAction, BrowserSnapshot } from './browser-service';
 
 // ---------------------------------------------------------------------------
 // Master AI prompt
@@ -108,54 +110,207 @@ CREATE_NEW new_root shape:
 }
 
 // ---------------------------------------------------------------------------
-// Sub-agent prompt
+// Step prompt + decision parser (in-process browser runner)
 // ---------------------------------------------------------------------------
 
-type BuildSubAgentPromptProps = {
+export type StepDecision =
+  | { type: 'action'; action: BrowserAction; comment?: string }
+  | { type: 'final'; message: string }
+  | { type: 'prompt_user'; message: string };
+
+type BuildStepPromptProps = {
   task: Task;
-  tabId: string;
-  maxActions: number;
+  step: number;
+  remainingActions: number;
+  feedback: string;
+  snapshot: BrowserSnapshot;
 };
 
-export function buildSubAgentSystemPrompt({
+export function buildStepPrompt({
   task,
-  tabId,
-  maxActions,
-}: BuildSubAgentPromptProps): string {
-  return `You are a browser automation sub-agent. Complete the following task using the browser CLI tools below.
+  step,
+  remainingActions,
+  feedback,
+  snapshot,
+}: BuildStepPromptProps): string {
+  return [
+    'You are controlling a persistent Playwright browser session to complete a task.',
+    'The browser is already running. Decide exactly ONE next step.',
+    'Return only valid JSON — no markdown, no prose outside the JSON.',
+    '',
+    `Task title: ${task.title}`,
+    `Task prompt: ${task.prompt}`,
+    `Step: ${step} — Actions remaining: ${remainingActions}`,
+    '',
+    'Allowed response shapes:',
+    '{"type":"action","comment":"short reason","action":{"type":"navigate","url":"https://example.com"}}',
+    '{"type":"action","comment":"short reason","action":{"type":"snapshot"}}',
+    '{"type":"action","comment":"short reason","action":{"type":"click","elementId":"e1"}}',
+    '{"type":"action","comment":"short reason","action":{"type":"type","elementId":"e2","text":"hello","clear":true}}',
+    '{"type":"action","comment":"short reason","action":{"type":"press","key":"Enter"}}',
+    '{"type":"action","comment":"short reason","action":{"type":"scroll","deltaY":700}}',
+    '{"type":"action","comment":"short reason","action":{"type":"wait","elementId":"e3","timeoutMs":10000}}',
+    '{"type":"action","comment":"short reason","action":{"type":"wait","text":"Welcome","timeoutMs":10000}}',
+    '{"type":"final","message":"concise summary of what was accomplished"}',
+    '{"type":"prompt_user","message":"Tell the user exactly what manual action is needed, e.g. please log in to LinkedIn then reply when done."}',
+    '',
+    'Rules:',
+    '- Use navigate when a URL is known.',
+    '- Use snapshot to refresh page state without interacting.',
+    '- Use wait after navigation or actions that trigger loading.',
+    '- Use press for keys like Enter, Tab, Escape, ArrowDown.',
+    '- Use scroll with deltaY positive for down, negative for up.',
+    '- If login, 2FA, or a CAPTCHA is required, return prompt_user immediately.',
+    '- Return final when the task is fully complete.',
+    '- Do NOT submit or publish anything unless the task explicitly says to.',
+    '- Leave the browser tab open when done.',
+    '',
+    'Latest feedback:',
+    feedback,
+    '',
+    'Current snapshot:',
+    JSON.stringify(snapshot, null, 2),
+  ].join('\n');
+}
 
-## Your task
-Title: ${task.title}
-Prompt: ${task.prompt}
-Tab ID: ${tabId}
-Action budget: ${maxActions} browser actions
+export function parseStepDecision(raw: string): StepDecision | null {
+  try {
+    const json = extractJsonObject(raw);
+    const parsed = JSON.parse(json) as Record<string, unknown>;
+    const type = typeof parsed.type === 'string' ? parsed.type : '';
 
-## Browser CLI tools (call via bash)
-\`\`\`
-bun src/cli.ts browser open_tab '{"tab_id":"${tabId}"}'
-bun src/cli.ts browser navigate '{"tab_id":"${tabId}","url":"https://example.com"}'
-bun src/cli.ts browser snapshot '{"tab_id":"${tabId}"}'
-bun src/cli.ts browser click '{"tab_id":"${tabId}","element_id":"e1"}'
-bun src/cli.ts browser type '{"tab_id":"${tabId}","element_id":"e1","text":"hello"}'
-bun src/cli.ts browser press '{"tab_id":"${tabId}","key":"Enter"}'
-bun src/cli.ts browser scroll '{"tab_id":"${tabId}","delta_y":600}'
-bun src/cli.ts browser wait '{"tab_id":"${tabId}","text":"Welcome","timeout_ms":5000}'
-\`\`\`
+    if (type === 'final') {
+      const message =
+        typeof parsed.message === 'string' ? parsed.message.trim() : '';
 
-## Workflow
-1. Start with: \`bun src/cli.ts browser open_tab '{"tab_id":"${tabId}"}'\`
-2. Use \`snapshot\` frequently to understand the current page state.
-3. Read the snapshot's \`visibleTextSummary\` and \`interactableElements\` to decide next action.
-4. Use element \`id\` values from the snapshot for click/type/wait actions.
+      return message ? { type: 'final', message } : null;
+    }
 
-## Rules
-- Do NOT publish or submit anything. Prepare drafts only unless the task explicitly says to publish.
-- Leave the browser tab open for user review when done.
-- Do not exceed ${maxActions} browser actions total.
-- If you encounter a login wall or need user action, stop immediately.
+    if (type === 'prompt_user') {
+      const message =
+        typeof parsed.message === 'string' ? parsed.message.trim() : '';
 
-## Completion markers (output in your final response text)
-- On success: \`TASK_COMPLETE: <brief summary of what was accomplished>\`
-- On login required or user action needed: \`CHECKPOINT_NEEDED: <specific reason, e.g. "LinkedIn login page at linkedin.com/login">\`
-- On budget exceeded: \`TASK_FAILED: Exceeded action budget of ${maxActions}\``;
+      return message ? { type: 'prompt_user', message } : null;
+    }
+
+    if (type === 'action') {
+      const action = parseBrowserAction(parsed.action);
+
+      const comment =
+        typeof parsed.comment === 'string' && parsed.comment.trim()
+          ? parsed.comment.trim()
+          : undefined;
+
+      return { type: 'action', action, comment };
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function extractJsonObject(raw: string): string {
+  const trimmed = raw.trim();
+
+  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+    return trimmed;
+  }
+
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+
+  if (fenced?.[1]) {
+    return fenced[1].trim();
+  }
+
+  const firstBrace = trimmed.indexOf('{');
+  const lastBrace = trimmed.lastIndexOf('}');
+
+  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+    return trimmed.slice(firstBrace, lastBrace + 1);
+  }
+
+  throw new Error('No JSON object found in response.');
+}
+
+function parseBrowserAction(value: unknown): BrowserAction {
+  if (!value || typeof value !== 'object') {
+    throw new Error('action must be an object.');
+  }
+
+  const a = value as Record<string, unknown>;
+  const type = typeof a.type === 'string' ? a.type : '';
+
+  if (type === 'snapshot') {
+    return { type: 'snapshot' };
+  }
+
+  if (type === 'navigate') {
+    const url = typeof a.url === 'string' ? a.url.trim() : '';
+
+    if (!url) {
+      throw new Error('navigate requires url.');
+    }
+
+    return { type: 'navigate', url };
+  }
+
+  if (type === 'click') {
+    return {
+      type: 'click',
+      elementId: requireString(a.elementId, 'click.elementId'),
+    };
+  }
+
+  if (type === 'type') {
+    const text = typeof a.text === 'string' ? a.text : null;
+
+    if (text === null) {
+      throw new Error('type requires text.');
+    }
+
+    return {
+      type: 'type',
+      elementId: requireString(a.elementId, 'type.elementId'),
+      text,
+      clear: typeof a.clear === 'boolean' ? a.clear : true,
+    };
+  }
+
+  if (type === 'press') {
+    return { type: 'press', key: requireString(a.key, 'press.key') };
+  }
+
+  if (type === 'scroll') {
+    return {
+      type: 'scroll',
+      deltaX: typeof a.deltaX === 'number' ? a.deltaX : 0,
+      deltaY: typeof a.deltaY === 'number' ? a.deltaY : 600,
+    };
+  }
+
+  if (type === 'wait') {
+    return {
+      type: 'wait',
+      elementId:
+        typeof a.elementId === 'string' && a.elementId.trim()
+          ? a.elementId.trim()
+          : undefined,
+      text:
+        typeof a.text === 'string' && a.text.trim() ? a.text.trim() : undefined,
+      timeoutMs: typeof a.timeoutMs === 'number' ? a.timeoutMs : 10_000,
+    };
+  }
+
+  throw new Error(`Unsupported action type: ${JSON.stringify(type)}`);
+}
+
+function requireString(value: unknown, field: string): string {
+  const s = typeof value === 'string' ? value.trim() : '';
+
+  if (!s) {
+    throw new Error(`${field} must be a non-empty string.`);
+  }
+
+  return s;
 }

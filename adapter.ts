@@ -13,6 +13,7 @@ import type { MessageSource } from '@src/messaging';
 import { parseCliInput } from '@src/system/parser-cli';
 import type { WebNodeRoot } from '@src/web/ui-schema';
 
+import { adaptClearCommand } from './commands/clear/adapter';
 import { adaptHelpCommand } from './commands/help/adapter';
 import { getBrowserCommandDefinition } from './commands/help/module';
 import { adaptListCommand } from './commands/list/adapter';
@@ -20,10 +21,12 @@ import { adaptRunCommand } from './commands/run/adapter';
 import { createMessageRepresentation } from './commands/shared/output';
 import { renderBrowserText } from './commands/shared/render';
 
-type BrowserSubcommand = 'help' | 'run' | 'list';
+type BrowserSubcommand = 'help' | 'run' | 'list' | 'clear';
 
 function isBrowserSubcommand(value: string): value is BrowserSubcommand {
-  return value === 'help' || value === 'run' || value === 'list';
+  return (
+    value === 'help' || value === 'run' || value === 'list' || value === 'clear'
+  );
 }
 
 type HandleBrowserAdapterProps = {
@@ -105,6 +108,12 @@ export async function handleBrowserAdapter({
         ...commonParams,
         storedCtx,
       });
+
+      return renderBrowserText(representation, { prefix });
+    }
+
+    if (parsed.subcommand === 'clear') {
+      const representation = adaptClearCommand(commonParams);
 
       return renderBrowserText(representation, { prefix });
     }
