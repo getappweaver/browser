@@ -1,11 +1,11 @@
 {
-  "name": "dm-bot-browser-plugin",
-  "version": "1.1.1",
+  "name": "appweaver-browser-plugin",
+  "version": "1.1.2",
   "dmBot": {
     "coreApiVersion": "^9.0.0",
-    "description": "Browser automation plugin — AI-driven multi-tab task execution"
+    "description": "Official AppWeaver Browser actions app. Adds focused AI-powered browser automation tools, commands, and data models to an AppWeaver workspace."
   },
-  "description": "Browser automation plugin — AI-driven multi-tab task execution",
+  "description": "Official AppWeaver Browser actions app. Adds focused AI-powered browser automation tools, commands, and data models to an AppWeaver workspace.",
   "type": "module",
   "scripts": {
     "contrib:setup": "chmod +x ../../scripts/commit-msg ../../scripts/post-commit ../../scripts/ngit-helper.sh && git config core.hooksPath ../../scripts"
