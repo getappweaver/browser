@@ -1,8 +1,10 @@
 {
   "name": "appweaver-browser-plugin",
-  "version": "1.1.3",
-  "dmBot": {
+  "version": "1.1.4",
+  "appweaver": {
     "title": "Browser actions",
+    "icon": "./commands/list/renderers/browser.svg",
+    "website": "https://github.com/getappweaver/browser",
     "coreApiVersion": "^9.0.0",
     "description": "Official AppWeaver Browser actions app. Adds focused AI-powered browser automation tools, commands, and data models to an AppWeaver workspace."
   },
