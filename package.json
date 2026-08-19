@@ -1,6 +1,6 @@
 {
   "name": "appweaver-browser-plugin",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "appweaver": {
     "title": "Browser actions",
     "icon": "./commands/list/renderers/browser.svg",

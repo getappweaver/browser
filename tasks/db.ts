@@ -140,8 +140,7 @@ export function createChildTask({
 
 export function getTask(db: Database, id: number): Task | null {
   const row = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id) as
-    | Record<string, unknown>
-    | undefined;
+    Record<string, unknown> | undefined;
 
   return row ? rowToTask(row) : null;
 }
@@ -331,8 +330,7 @@ export function insertTaskEvent({
 
 export function getTaskEvent(db: Database, id: number): TaskEvent | null {
   const row = db.prepare('SELECT * FROM task_events WHERE id = ?').get(id) as
-    | Record<string, unknown>
-    | undefined;
+    Record<string, unknown> | undefined;
 
   return row ? rowToEvent(row) : null;
 }

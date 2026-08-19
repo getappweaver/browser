@@ -4,9 +4,13 @@ All notable changes for each version are listed under the corresponding `v*.*.*`
 Tags and this file are updated by the post-commit hook when you commit with `--patch`, `--minor`, or `--major` (see CONTRIBUTING.md).
 You can also run `bun run release:changelog` to rewrite this file from tags.
 
+## [v1.2.1] - 2026-08-19
+
+- fix: lint (d687cdf)
+
 ## [v1.2.0] - 2026-06-14
 
-- chore: require story-capable core (ec0710a)
+- chore: require story-capable core (1fb7bc1)
 
 ## [v1.1.5] - 2026-05-23
 
