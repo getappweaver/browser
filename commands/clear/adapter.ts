@@ -1,6 +1,6 @@
 import type { Database } from 'bun:sqlite';
 
-import type { PluginIdentity, RunAgentFn } from '@src/core/plugin';
+import type { PluginAgentService, PluginIdentity } from '@src/core/plugin';
 import type { MessageSource } from '@src/messaging';
 import type { CommandDefinition } from '@src/system/command-definition';
 import type { ParsedCliInvocation } from '@src/system/parser-cli';
@@ -16,7 +16,7 @@ export function adaptClearCommand(params: {
   db: Database;
   source: MessageSource;
   identity: PluginIdentity;
-  runAgent: RunAgentFn;
+  agent: PluginAgentService;
   parsed: ParsedCliInvocation;
   command: CommandDefinition;
 }): BrowserRenderable {
@@ -25,7 +25,7 @@ export function adaptClearCommand(params: {
   void params.command;
   void params.source;
   void params.identity;
-  void params.runAgent;
+  void params.agent;
 
   const text = handleClearCommand({ db: params.db });
 

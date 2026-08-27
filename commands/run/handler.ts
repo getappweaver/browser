@@ -1,6 +1,6 @@
 import type { Database } from 'bun:sqlite';
 
-import type { PluginContext, RunAgentFn } from '@src/core/plugin';
+import type { PluginContext } from '@src/core/plugin';
 import type { MessageSource } from '@src/messaging';
 
 import { handleMasterDecision } from '../../orchestrator/master';
@@ -8,7 +8,6 @@ import { handleMasterDecision } from '../../orchestrator/master';
 type HandleRunCommandProps = {
   db: Database;
   ctx: PluginContext;
-  runAgent: RunAgentFn;
   prompt: string;
   source: MessageSource;
 };
@@ -16,7 +15,6 @@ type HandleRunCommandProps = {
 export async function handleRunCommand({
   db,
   ctx,
-  runAgent,
   prompt,
   source,
 }: HandleRunCommandProps): Promise<string> {
@@ -27,7 +25,6 @@ export async function handleRunCommand({
   return handleMasterDecision({
     db,
     ctx,
-    runAgent,
     userMessage: prompt,
     source,
   });

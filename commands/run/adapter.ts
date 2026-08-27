@@ -2,8 +2,8 @@ import type { Database } from 'bun:sqlite';
 
 import type {
   PluginContext,
+  PluginAgentService,
   PluginIdentity,
-  RunAgentFn,
 } from '@src/core/plugin';
 import type { MessageSource } from '@src/messaging';
 import type { CommandDefinition } from '@src/system/command-definition';
@@ -21,7 +21,7 @@ export async function adaptRunCommand(params: {
   db: Database;
   source: MessageSource;
   identity: PluginIdentity;
-  runAgent: RunAgentFn;
+  agent: PluginAgentService;
   parsed: ParsedCliInvocation;
   command: CommandDefinition;
   storedCtx: PluginContext;
@@ -34,7 +34,6 @@ export async function adaptRunCommand(params: {
   const text = await handleRunCommand({
     db: params.db,
     ctx: params.storedCtx,
-    runAgent: params.runAgent,
     prompt,
     source: params.source,
   });

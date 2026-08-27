@@ -3,8 +3,8 @@ import type { Database } from 'bun:sqlite';
 import { buildHelpSubcommandRepresentation } from '@src/commands/help/command';
 import type {
   PluginContext,
+  PluginAgentService,
   PluginIdentity,
-  RunAgentFn,
 } from '@src/core/plugin';
 import type { MessageSource } from '@src/messaging';
 import type { CommandDefinition } from '@src/system/command-definition';
@@ -18,7 +18,7 @@ export function adaptHelpCommand(params: {
   db: Database;
   source: MessageSource;
   identity: PluginIdentity;
-  runAgent: RunAgentFn;
+  agent: PluginAgentService;
   parsed: ParsedCliInvocation;
   command: CommandDefinition;
   storedCtx: PluginContext;
@@ -26,7 +26,7 @@ export function adaptHelpCommand(params: {
   void params.db;
   void params.source;
   void params.identity;
-  void params.runAgent;
+  void params.agent;
   void params.storedCtx;
 
   const result = buildHelpSubcommandRepresentation({

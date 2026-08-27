@@ -6,9 +6,8 @@
 import type { Database } from 'bun:sqlite';
 import { z } from 'zod';
 
-import { createBackend } from '@src/backends/factory';
 import { getOutputString } from '@src/backends/types';
-import type { PluginContext, RunAgentFn } from '@src/core/plugin';
+import type { PluginContext } from '@src/core/plugin';
 import type { MessageSource } from '@src/messaging';
 import { dmBotRoot } from '@src/paths';
 
@@ -82,7 +81,6 @@ type CallMasterAiProps = {
   userMessage: string;
   db: Database;
   ctx: PluginContext;
-  runAgent: RunAgentFn;
 };
 
 async function callMasterAi({
@@ -93,30 +91,18 @@ async function callMasterAi({
   const taskSummaries = buildTaskSummaries(db);
   const prompt = buildMasterSystemPrompt({ userMessage, taskSummaries });
 
-  const { defaults } = ctx;
-
-  const backend = createBackend({
-    backendName: defaults.backend,
-    dmBotRoot,
-    cursorMode: 'ask',
-    opencodeAgentName: 'ask',
-    attachUrl: process.env.BOT_OPENCODE_SERVE_URL ?? null,
-    modelOverride: defaults.model,
-    providerName: defaults.provider,
-  });
-
-  const sessionId = await backend.createSession(dmBotRoot);
-
-  const result = await backend.runMessage({
-    sessionId,
-    content: prompt,
-    cursorMode: 'ask',
-    opencodeAgentName: 'ask',
+  const result = await ctx.agent.run({
+    prompt,
+    sessionId: null,
+    backend: null,
+    provider: null,
+    model: null,
+    mode: 'ask',
+    workspaceTarget: null,
     cwd: dmBotRoot,
-    getRoutstrSkKey: ctx.getRoutstrSkKey,
-    modelOverride: defaults.model,
     onAgentStreamChunk: null,
-    streamAbortSignal: null,
+    abortSignal: null,
+    context: null,
   });
 
   const raw = getOutputString(result).trim();
@@ -293,7 +279,6 @@ async function executeDecision({
 type HandleMasterDecisionProps = {
   db: Database;
   ctx: PluginContext;
-  runAgent: RunAgentFn;
   userMessage: string;
   source: MessageSource;
 };
@@ -301,11 +286,10 @@ type HandleMasterDecisionProps = {
 export async function handleMasterDecision({
   db,
   ctx,
-  runAgent,
   userMessage,
   source,
 }: HandleMasterDecisionProps): Promise<string> {
-  const decision = await callMasterAi({ userMessage, db, ctx, runAgent });
+  const decision = await callMasterAi({ userMessage, db, ctx });
 
   if (!decision) {
     return 'Sorry, I could not parse a decision from the AI. Please try rephrasing.';

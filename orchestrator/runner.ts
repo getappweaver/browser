@@ -5,7 +5,6 @@
 
 import type { Database } from 'bun:sqlite';
 
-import { createBackend } from '@src/backends/factory';
 import { getOutputString } from '@src/backends/types';
 import type { PluginContext } from '@src/core/plugin';
 import { dmBotRoot } from '@src/paths';
@@ -57,19 +56,7 @@ async function runSubTask({
   const tabId = tabIdForTask(task.id);
   const service = getBrowserService();
   const config = DEFAULT_BROWSER_CONFIG;
-  const { defaults } = ctx;
-
-  const backend = createBackend({
-    backendName: defaults.backend,
-    dmBotRoot,
-    cursorMode: 'ask',
-    opencodeAgentName: 'ask',
-    attachUrl: process.env.BOT_OPENCODE_SERVE_URL ?? null,
-    modelOverride: defaults.model,
-    providerName: defaults.provider,
-  });
-
-  const sessionId = await backend.createSession(dmBotRoot);
+  let sessionId: string | null = null;
 
   setTaskTabId({ db, id: task.id, tabId });
   updateTaskStatus({ db, id: task.id, status: 'running' });
@@ -115,19 +102,23 @@ async function runSubTask({
     const abortController = new AbortController();
     const timeout = setTimeout(() => abortController.abort(), MAX_STEP_MS);
 
-    const result = await backend
-      .runMessage({
+    const result = await ctx.agent
+      .run({
+        prompt,
         sessionId,
-        content: prompt,
-        cursorMode: 'ask',
-        opencodeAgentName: 'ask',
+        backend: null,
+        provider: null,
+        model: null,
+        mode: 'ask',
+        workspaceTarget: null,
         cwd: dmBotRoot,
-        getRoutstrSkKey: ctx.getRoutstrSkKey,
-        modelOverride: defaults.model,
         onAgentStreamChunk: null,
-        streamAbortSignal: abortController.signal,
+        abortSignal: abortController.signal,
+        context: null,
       })
       .finally(() => clearTimeout(timeout));
+
+    sessionId = result.sessionId;
 
     const raw = getOutputString(result).trim();
     const decision = parseStepDecision(raw);

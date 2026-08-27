@@ -63,7 +63,7 @@ export const BrowserPlugin: BotPlugin = {
       source: context.source,
       identity: BrowserPlugin.identity,
       storedCtx: BrowserPluginContext,
-      runAgent: context.runAgent,
+      agent: context.agent,
     });
   },
   onInit: (ctx: PluginContext) => {

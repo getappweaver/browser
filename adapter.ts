@@ -6,8 +6,8 @@ import type { Database } from 'bun:sqlite';
 
 import type {
   PluginContext,
+  PluginAgentService,
   PluginIdentity,
-  RunAgentFn,
 } from '@src/core/plugin';
 import type { MessageSource } from '@src/messaging';
 import { parseCliInput } from '@src/system/parser-cli';
@@ -37,7 +37,7 @@ type HandleBrowserAdapterProps = {
   source: MessageSource;
   identity: PluginIdentity;
   storedCtx: PluginContext;
-  runAgent: RunAgentFn;
+  agent: PluginAgentService;
 };
 
 export async function handleBrowserAdapter({
@@ -48,7 +48,7 @@ export async function handleBrowserAdapter({
   source,
   identity,
   storedCtx,
-  runAgent,
+  agent,
 }: HandleBrowserAdapterProps): Promise<string | WebNodeRoot> {
   const normalizedArgs = args.length === 0 ? ['help'] : args;
   const subcommand = normalizedArgs[0]?.toLowerCase() ?? '';
@@ -85,7 +85,7 @@ export async function handleBrowserAdapter({
       parsed,
       command,
       identity,
-      runAgent,
+      agent,
     };
 
     if (parsed.subcommand === 'help') {
