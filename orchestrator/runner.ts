@@ -106,10 +106,6 @@ async function runSubTask({
       .run({
         prompt,
         sessionId,
-        backend: null,
-        provider: null,
-        model: null,
-        mode: 'ask',
         workspaceTarget: null,
         cwd: dmBotRoot,
         onAgentStreamChunk: null,

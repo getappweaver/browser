@@ -94,10 +94,6 @@ async function callMasterAi({
   const result = await ctx.agent.run({
     prompt,
     sessionId: null,
-    backend: null,
-    provider: null,
-    model: null,
-    mode: 'ask',
     workspaceTarget: null,
     cwd: dmBotRoot,
     onAgentStreamChunk: null,
