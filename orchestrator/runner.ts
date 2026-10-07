@@ -5,9 +5,7 @@
 
 import type { Database } from 'bun:sqlite';
 
-import { getOutputString } from '@src/backends/types';
 import type { PluginContext } from '@src/core/plugin';
-import { dmBotRoot } from '@src/paths';
 
 import {
   getNextPendingChild,
@@ -19,18 +17,22 @@ import {
   setTaskTabId,
   updateTaskStatus,
 } from '../tasks/db';
+import { taskUserContext } from '../tasks/thread';
 import type { Task } from '../tasks/types';
 
 import { DEFAULT_BROWSER_CONFIG, getBrowserService } from './browser-service';
+import { browserPolicyDecision } from './decision-policy';
 import {
   notifyCheckpoint,
   notifyRunSummary,
   notifyTaskComplete,
   notifyTaskFailed,
 } from './notifications';
-import { buildStepPrompt, parseStepDecision } from './prompts';
-
-const MAX_STEP_MS = 60_000;
+import {
+  loadBrowserObservations,
+  saveBrowserObservation,
+} from './observations';
+import { getBrowserInferenceSettings } from './settings';
 
 function tabIdForTask(taskId: number): string {
   return `task-${taskId}`;
@@ -45,6 +47,7 @@ type RunSubTaskProps = {
   ctx: PluginContext;
   task: Task;
   resumeContext: string | null;
+  abortSignal: AbortSignal | null;
 };
 
 async function runSubTask({
@@ -52,11 +55,51 @@ async function runSubTask({
   ctx,
   task,
   resumeContext,
+  abortSignal,
 }: RunSubTaskProps): Promise<string> {
-  const tabId = tabIdForTask(task.id);
+  try {
+    return await runSubTaskSteps({ db, ctx, task, resumeContext, abortSignal });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+
+    if (abortSignal?.aborted) {
+      updateTaskStatus({ db, id: task.id, status: 'cancelled' });
+
+      return 'Stopped by user.';
+    }
+
+    // Browser launch/recovery and snapshot failures must not leave a task running.
+    updateTaskStatus({ db, id: task.id, status: 'waiting' });
+
+    insertTaskEvent({
+      db,
+      task_id: task.id,
+      role: 'system',
+      kind: 'status',
+      text: `Waiting: Browser run interrupted: ${reason}. Reopen the task to recover its tab.`,
+    });
+
+    return notifyCheckpoint({
+      sendDm: ctx.sendDm,
+      task,
+      reason: `Browser run interrupted: ${reason}. Reopen the task to recover its tab.`,
+    });
+  }
+}
+
+async function runSubTaskSteps({
+  db,
+  ctx,
+  task,
+  resumeContext,
+  abortSignal,
+}: RunSubTaskProps): Promise<string> {
+  const tabId = task.tab_id ?? tabIdForTask(task.id);
   const service = getBrowserService();
   const config = DEFAULT_BROWSER_CONFIG;
-  let sessionId: string | null = null;
+  const settings = getBrowserInferenceSettings(db);
+  const history = loadBrowserObservations(db, task.id);
+  const repetitions = new Map<string, number>();
 
   setTaskTabId({ db, id: task.id, tabId });
   updateTaskStatus({ db, id: task.id, status: 'running' });
@@ -76,6 +119,8 @@ async function runSubTask({
     ? await service.findOrRecoverTab(config, tabId, task.last_url)
     : await service.openTab(config, tabId);
 
+  await page.bringToFront();
+
   let snapshot = await service.snapshot(config, tabId);
 
   if (snapshot.url && snapshot.url !== 'about:blank') {
@@ -86,59 +131,37 @@ async function runSubTask({
     ? `Resumed. User message: ${resumeContext}\nCurrent page: ${snapshot.url}`
     : `Browser tab opened. Current page: ${snapshot.url}`;
 
-  void page; // page reference kept alive via service map
-
   const remainingBudget = task.max_actions - task.actions_used;
 
   for (let step = 1; step <= remainingBudget; step++) {
-    const prompt = buildStepPrompt({
+    abortSignal?.throwIfAborted();
+
+    const { decision, trace } = await browserPolicyDecision({
+      ctx,
       task,
-      step,
-      remainingActions: remainingBudget - step + 1,
       feedback,
       snapshot,
+      userContext: taskUserContext(db, task.id),
+      history,
+      settings,
+      abortSignal,
     });
 
-    const abortController = new AbortController();
-    const timeout = setTimeout(() => abortController.abort(), MAX_STEP_MS);
+    abortSignal?.throwIfAborted();
 
-    const result = await ctx.agent
-      .run({
-        prompt,
-        sessionId,
-        workspaceTarget: null,
-        cwd: dmBotRoot,
-        onAgentStreamChunk: null,
-        abortSignal: abortController.signal,
-        context: null,
-      })
-      .finally(() => clearTimeout(timeout));
-
-    sessionId = result.sessionId;
-
-    const raw = getOutputString(result).trim();
-    const decision = parseStepDecision(raw);
-
-    if (!decision || result.type === 'error') {
-      const reason =
-        result.type === 'error'
-          ? result.output
-          : `Step ${step}: AI response could not be parsed as a valid action.`;
-
-      updateTaskStatus({ db, id: task.id, status: 'failed' });
-
-      insertTaskEvent({
-        db,
-        task_id: task.id,
-        role: 'system',
-        kind: 'status',
-        text: `Failed: ${reason}`,
-      });
-
-      return notifyTaskFailed({ sendDm: ctx.sendDm, task, reason });
-    }
+    insertTaskEvent({
+      db,
+      task_id: task.id,
+      role: 'system',
+      kind: 'message',
+      text: `Step ${step} decision: ${trace}`,
+    });
 
     if (decision.type === 'final') {
+      if (!service.isTabOpen(tabId)) {
+        throw new Error('The task browser tab was closed.');
+      }
+
       updateTaskStatus({ db, id: task.id, status: 'completed' });
 
       insertTaskEvent({
@@ -157,6 +180,20 @@ async function runSubTask({
     }
 
     if (decision.type === 'prompt_user') {
+      // Verify the handoff still has a live tab after the AI call.
+      const handoffPage = await service.findOrRecoverTab(
+        config,
+        tabId,
+        snapshot.url,
+      );
+
+      await handoffPage.bringToFront();
+      snapshot = await service.snapshot(config, tabId);
+
+      if (snapshot.url !== 'about:blank') {
+        setTaskLastUrl({ db, id: task.id, lastUrl: snapshot.url });
+      }
+
       updateTaskStatus({ db, id: task.id, status: 'waiting' });
 
       insertTaskEvent({
@@ -175,19 +212,74 @@ async function runSubTask({
     }
 
     // Execute browser action in-process.
+    let dispatched = false;
     try {
+      if (!service.isTabOpen(tabId)) {
+        throw new Error('The task browser tab was closed.');
+      }
+
+      await service.validateActionTarget({
+        tabId,
+        documentId: snapshot.documentId,
+        action: decision.action,
+      });
+
+      abortSignal?.throwIfAborted();
+
+      const signature = JSON.stringify({
+        document: snapshot.documentId,
+        action: decision.action,
+      });
+
+      const count = (repetitions.get(signature) ?? 0) + 1;
+      repetitions.set(signature, count);
+
+      if (count > 3) {
+        throw new Error(
+          'Repeated browser action detected. Inspect the page before continuing.',
+        );
+      }
+
+      insertTaskEvent({
+        db,
+        task_id: task.id,
+        role: 'system',
+        kind: 'message',
+        text: `Step ${step} dispatch: ${decision.action.type}${'elementId' in decision.action ? ` ${decision.action.elementId}` : ''}`,
+      });
+
+      const before = snapshot;
+      incrementActionsUsed(db, task.id);
+      dispatched = true;
+
       const actionResult = await service.runAction(
         config,
         tabId,
         decision.action,
       );
 
-      // Snapshot is free; only count real interactions.
-      if (decision.action.type !== 'snapshot') {
-        incrementActionsUsed(db, task.id);
-      }
-
       snapshot = actionResult.snapshot;
+      const changed = JSON.stringify(before) !== JSON.stringify(snapshot);
+
+      history.push({
+        action: actionResult.summary,
+        changed,
+        page: {
+          url: snapshot.url,
+          title: snapshot.title,
+          text: snapshot.visibleTextSummary,
+        },
+      });
+
+      saveBrowserObservation({
+        db,
+        taskId: task.id,
+        observation: history.at(-1)!,
+      });
+
+      if (history.length > 10) {
+        history.shift();
+      }
 
       if (snapshot.url && snapshot.url !== 'about:blank') {
         setTaskLastUrl({ db, id: task.id, lastUrl: snapshot.url });
@@ -205,11 +297,33 @@ async function runSubTask({
         text: `Step ${step}: ${actionLine}`,
       });
 
-      feedback = `Last action succeeded: ${actionLine}`;
+      feedback = `Last action executed: ${actionLine}. ${changed ? 'Page changed.' : 'No observed page change.'}`;
+      abortSignal?.throwIfAborted();
+
+      if (
+        history.slice(-3).length === 3 &&
+        history.slice(-3).every((action) => !action.changed)
+      ) {
+        throw new Error(
+          'Three actions produced no observed page change. Inspect the page before continuing.',
+        );
+      }
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
 
       feedback = `Last action failed: ${reason}`;
+
+      // A closed browser is recovered on the next explicit user continuation,
+      // not replaced by an unnoticed blank tab in the middle of a run.
+      if (
+        dispatched ||
+        !service.isTabOpen(tabId) ||
+        reason.startsWith('Repeated browser action')
+      ) {
+        throw error;
+      }
+
+      snapshot = await service.snapshot(config, tabId);
 
       insertTaskEvent({
         db,
@@ -247,6 +361,7 @@ type ExecuteSequentialLoopProps = {
   rootTaskId: number;
   resumeTaskId: number | null;
   resumeContext: string | null;
+  abortSignal: AbortSignal | null;
 };
 
 export async function executeSequentialLoop({
@@ -255,19 +370,30 @@ export async function executeSequentialLoop({
   rootTaskId,
   resumeTaskId,
   resumeContext,
+  abortSignal,
 }: ExecuteSequentialLoopProps): Promise<string> {
   if (resumeTaskId !== null) {
     const taskToResume = getTask(db, resumeTaskId);
 
     if (taskToResume && taskToResume.status === 'waiting') {
-      await runSubTask({ db, ctx, task: taskToResume, resumeContext });
+      await runSubTask({
+        db,
+        ctx,
+        task: taskToResume,
+        resumeContext,
+        abortSignal,
+      });
     }
   }
 
   let next = getNextPendingChild(db, rootTaskId);
 
   while (next !== null) {
-    await runSubTask({ db, ctx, task: next, resumeContext: null });
+    if (abortSignal?.aborted) {
+      break;
+    }
+
+    await runSubTask({ db, ctx, task: next, resumeContext: null, abortSignal });
     next = getNextPendingChild(db, rootTaskId);
   }
 

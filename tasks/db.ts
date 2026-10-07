@@ -135,7 +135,10 @@ export function createChildTask({
     [parent_id, title, prompt, max_actions],
   );
 
-  return getTask(db, Number(info.lastInsertRowid))!;
+  const id = Number(info.lastInsertRowid);
+  updateTaskStatus({ db, id, status: 'pending' });
+
+  return getTask(db, id)!;
 }
 
 export function getTask(db: Database, id: number): Task | null {
@@ -147,17 +150,46 @@ export function getTask(db: Database, id: number): Task | null {
 
 export function listRootTasks(db: Database): Task[] {
   const rows = db
-    .prepare(
-      `SELECT * FROM tasks WHERE parent_id IS NULL ORDER BY created_at DESC`,
-    )
+    .prepare(`SELECT * FROM tasks WHERE parent_id IS NULL ORDER BY id DESC`)
     .all() as Record<string, unknown>[];
 
-  return rows.map(rowToTask);
+  return rows.map((row) => {
+    const root = rowToTask(row);
+    const children = listChildTasks(db, root.id);
+
+    return children.length > 0
+      ? { ...root, status: statusFromChildren(children) }
+      : root;
+  });
+}
+
+function statusFromChildren(children: Task[]): TaskStatus {
+  if (children.some((task) => task.status === 'running')) {
+    return 'running';
+  }
+
+  if (children.some((task) => task.status === 'waiting')) {
+    return 'waiting';
+  }
+
+  if (children.some((task) => task.status === 'pending')) {
+    return 'pending';
+  }
+
+  if (children.some((task) => task.status === 'failed')) {
+    return 'failed';
+  }
+
+  if (children.every((task) => task.status === 'completed')) {
+    return 'completed';
+  }
+
+  return 'cancelled';
 }
 
 export function listChildTasks(db: Database, parentId: number): Task[] {
   const rows = db
-    .prepare(`SELECT * FROM tasks WHERE parent_id = ? ORDER BY created_at ASC`)
+    .prepare(`SELECT * FROM tasks WHERE parent_id = ? ORDER BY id ASC`)
     .all(parentId) as Record<string, unknown>[];
 
   return rows.map(rowToTask);
@@ -201,6 +233,17 @@ export function updateTaskStatus({
     `UPDATE tasks SET status = ?, updated_at = datetime('now') WHERE id = ?`,
     [status, id],
   );
+
+  const task = getTask(db, id);
+
+  if (task?.parent_id !== null && task?.parent_id !== undefined) {
+    const children = listChildTasks(db, task.parent_id);
+
+    db.run(
+      "UPDATE tasks SET status = ?, updated_at = datetime('now') WHERE id = ?",
+      [statusFromChildren(children), task.parent_id],
+    );
+  }
 }
 
 type SetTaskSessionIdProps = {
@@ -296,6 +339,7 @@ export function clearAllTasks(db: Database): { tasks: number; events: number } {
   ).n;
 
   db.run('DELETE FROM task_events');
+  db.run('DELETE FROM browser_runs');
   db.run('DELETE FROM tasks');
 
   return { tasks: taskCount, events: eventCount };
@@ -337,9 +381,7 @@ export function getTaskEvent(db: Database, id: number): TaskEvent | null {
 
 export function getTaskEvents(db: Database, taskId: number): TaskEvent[] {
   const rows = db
-    .prepare(
-      `SELECT * FROM task_events WHERE task_id = ? ORDER BY created_at ASC`,
-    )
+    .prepare(`SELECT * FROM task_events WHERE task_id = ? ORDER BY id ASC`)
     .all(taskId) as Record<string, unknown>[];
 
   return rows.map(rowToEvent);
@@ -351,7 +393,7 @@ export function getLastTaskEvent(
 ): TaskEvent | null {
   const row = db
     .prepare(
-      `SELECT * FROM task_events WHERE task_id = ? ORDER BY created_at DESC LIMIT 1`,
+      `SELECT * FROM task_events WHERE task_id = ? ORDER BY id DESC LIMIT 1`,
     )
     .get(taskId) as Record<string, unknown> | undefined;
 

@@ -15,16 +15,24 @@ import {
   createChildTask,
   createRootTask,
   getLastTaskEvent,
+  getTask,
   insertTaskEvent,
   listChildTasks,
   listRootTasks,
   listWaitingTasks,
-  updateTaskStatus,
+  setTaskLastUrl,
+  setTaskTabId,
 } from '../tasks/db';
 import type { Task } from '../tasks/types';
 
+import { DEFAULT_BROWSER_CONFIG, getBrowserService } from './browser-service';
+import {
+  executeTaskPass,
+  isTaskBusy,
+  stopExecution,
+  taskRootId,
+} from './executions';
 import { buildMasterSystemPrompt } from './prompts';
-import { executeSequentialLoop } from './runner';
 
 const DEFAULT_MAX_ACTIONS = 50;
 
@@ -44,7 +52,14 @@ const NewRootInputSchema = z.object({
 });
 
 const MasterDecisionSchema = z.object({
-  decision: z.enum(['CREATE_NEW', 'RESUME', 'STOP', 'CLARIFY', 'NOTHING']),
+  decision: z.enum([
+    'CREATE_NEW',
+    'RESUME',
+    'REOPEN',
+    'STOP',
+    'CLARIFY',
+    'NOTHING',
+  ]),
   task_id: z.number().nullable(),
   question: z.string().nullable(),
   new_root: NewRootInputSchema.nullable(),
@@ -143,47 +158,105 @@ async function executeDecision({
     return decision.question;
   }
 
-  if (decision.decision === 'STOP' && decision.task_id !== null) {
-    const task = listChildTasks(db, decision.task_id).find(
-      (t) => t.id === decision.task_id,
-    );
+  if (decision.decision === 'REOPEN' && decision.task_id !== null) {
+    const selected = getTask(db, decision.task_id);
 
-    if (!task) {
-      updateTaskStatus({ db, id: decision.task_id, status: 'cancelled' });
+    if (!selected) {
+      return `Task #${decision.task_id} was not found.`;
+    }
+
+    const candidates =
+      selected.parent_id === null
+        ? listChildTasks(db, selected.id).filter(
+            (task) => task.status === 'waiting',
+          )
+        : selected.status === 'waiting'
+          ? [selected]
+          : [];
+
+    if (candidates.length !== 1) {
+      return candidates.length > 1
+        ? `Which waiting task should I reopen? ${candidates.map((task) => `#${task.id}: ${task.title}`).join('; ')}`
+        : `Task #${selected.id} has no waiting checkpoint to reopen.`;
+    }
+
+    const target = candidates[0]!;
+
+    if (isTaskBusy(target.parent_id ?? target.id)) {
+      return 'This task is already busy.';
+    }
+
+    const tabId = target.tab_id ?? `task-${target.id}`;
+    const service = getBrowserService();
+    try {
+      const page = await service.findOrRecoverTab(
+        DEFAULT_BROWSER_CONFIG,
+        tabId,
+        target.last_url,
+      );
+
+      await page.bringToFront();
+      const snapshot = await service.snapshot(DEFAULT_BROWSER_CONFIG, tabId);
+      setTaskTabId({ db, id: target.id, tabId });
+
+      if (snapshot.url !== 'about:blank') {
+        setTaskLastUrl({ db, id: target.id, lastUrl: snapshot.url });
+      }
+
+      const message = `Browser tab for task #${target.id} is open at ${snapshot.url}. The task is still waiting. Complete login or signup directly in the browser, then reply with “continue task #${target.id}”. Do not send credentials in chat.`;
 
       insertTaskEvent({
         db,
-        task_id: decision.task_id,
-        role: 'user',
-        kind: 'status',
-        text: `Cancelled by user: "${userMessage}"`,
+        task_id: target.id,
+        role: 'system',
+        kind: 'message',
+        text: message,
       });
 
-      return `Task #${decision.task_id} cancelled.`;
+      return message;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+
+      insertTaskEvent({
+        db,
+        task_id: target.id,
+        role: 'system',
+        kind: 'message',
+        text: `Browser recovery failed: ${reason}`,
+      });
+
+      return `Could not reopen task #${target.id}: ${reason}. The task remains waiting.`;
     }
+  }
 
-    updateTaskStatus({ db, id: task.id, status: 'cancelled' });
+  if (decision.decision === 'STOP' && decision.task_id !== null) {
+    const rootId = taskRootId(db, decision.task_id);
+    stopExecution(db, rootId);
 
-    insertTaskEvent({
-      db,
-      task_id: task.id,
-      role: 'user',
-      kind: 'status',
-      text: `Cancelled by user: "${userMessage}"`,
-    });
-
-    return `"${task.title}" cancelled.`;
+    return `Task #${rootId} stopped.`;
   }
 
   if (decision.decision === 'RESUME' && decision.task_id !== null) {
-    const taskId = decision.task_id;
+    const selected = getTask(db, decision.task_id);
 
-    const waitingTasks = listWaitingTasks(db);
-    const target = waitingTasks.find((t) => t.id === taskId);
+    const waitingTasks =
+      selected?.parent_id === null
+        ? listChildTasks(db, selected.id).filter(
+            (task) => task.status === 'waiting',
+          )
+        : listWaitingTasks(db).filter((task) => task.id === decision.task_id);
+
+    if (waitingTasks.length > 1) {
+      return `Which waiting task should I continue? ${waitingTasks.map((task) => `#${task.id}: ${task.title}`).join('; ')}`;
+    }
+
+    const target = waitingTasks[0];
 
     if (!target) {
-      return `Task #${taskId} is not in waiting state.`;
+      return `Task #${decision.task_id} is not in waiting state.`;
     }
+
+    const taskId = target.id;
 
     insertTaskEvent({
       db,
@@ -199,7 +272,7 @@ async function executeDecision({
       return `Task #${taskId} has no parent — cannot resume.`;
     }
 
-    const resumeLoopPromise = executeSequentialLoop({
+    const resumeLoopPromise = executeTaskPass({
       db,
       ctx,
       rootTaskId: parentId,
@@ -246,7 +319,7 @@ async function executeDecision({
     const subList = sub_tasks.map((s) => `  • ${s.title}`).join('\n');
     const startingMsg = `Starting "${title}" with ${sub_tasks.length} sub-task${sub_tasks.length > 1 ? 's' : ''}:\n${subList}`;
 
-    const loopPromise = executeSequentialLoop({
+    const loopPromise = executeTaskPass({
       db,
       ctx,
       rootTaskId: rootTask.id,
@@ -285,7 +358,29 @@ export async function handleMasterDecision({
   userMessage,
   source,
 }: HandleMasterDecisionProps): Promise<string> {
-  const decision = await callMasterAi({ userMessage, db, ctx });
+  const taskNumber = userMessage.trim().match(/^#?(\d+)$/);
+
+  const explicitTask = userMessage
+    .trim()
+    .match(/^(reopen|open|show|continue|resume)\s+(?:task\s+)?#?(\d+)$/i);
+
+  const decision: MasterDecision | null = taskNumber
+    ? {
+        decision: 'REOPEN',
+        task_id: Number(taskNumber[1]),
+        question: null,
+        new_root: null,
+      }
+    : explicitTask
+      ? {
+          decision: /^(continue|resume)$/i.test(explicitTask[1]!)
+            ? 'RESUME'
+            : 'REOPEN',
+          task_id: Number(explicitTask[2]),
+          question: null,
+          new_root: null,
+        }
+      : await callMasterAi({ userMessage, db, ctx });
 
   if (!decision) {
     return 'Sorry, I could not parse a decision from the AI. Please try rephrasing.';

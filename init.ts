@@ -64,6 +64,7 @@ export const BrowserPlugin: BotPlugin = {
       identity: BrowserPlugin.identity,
       storedCtx: BrowserPluginContext,
       agent: context.agent,
+      jsonPayload: context.jsonPayload ?? null,
     });
   },
   onInit: (ctx: PluginContext) => {

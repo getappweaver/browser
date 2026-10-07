@@ -20,9 +20,9 @@ export async function notifyCheckpoint({
   task,
   reason,
 }: NotifyCheckpointProps): Promise<string> {
-  const msg = `[browser] "${task.title}" is waiting for your input.\n\nReason: ${reason}\n\nThe browser tab is open — please take the required action there and then let me know when you're ready to continue.`;
+  const msg = `[browser] "${task.title}" is waiting for your input.\n\nReason: ${reason}\n\nUse Open browser to show or recover the tab. Complete any login directly in the browser, then continue the task. Do not send credentials in chat.`;
 
-  await sendDm(msg);
+  await sendDm(msg).catch(() => undefined);
 
   return msg;
 }
@@ -40,7 +40,7 @@ export async function notifyTaskComplete({
 }: NotifyTaskCompleteProps): Promise<string> {
   const msg = `[browser] "${task.title}" is done.\n\n${summary}`;
 
-  await sendDm(msg);
+  await sendDm(msg).catch(() => undefined);
 
   return msg;
 }
@@ -58,7 +58,7 @@ export async function notifyTaskFailed({
 }: NotifyTaskFailedProps): Promise<string> {
   const msg = `[browser] "${task.title}" failed.\n\nReason: ${reason}\n\nYou can retry with /browser run or ask me to skip this task.`;
 
-  await sendDm(msg);
+  await sendDm(msg).catch(() => undefined);
 
   return msg;
 }
@@ -98,7 +98,7 @@ export async function notifyRunSummary({
 
   const msg = lines.join('\n');
 
-  await sendDm(msg);
+  await sendDm(msg).catch(() => undefined);
 
   return msg;
 }

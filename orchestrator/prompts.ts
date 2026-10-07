@@ -40,7 +40,7 @@ export function buildMasterSystemPrompt({
                         ? ` — last event: "${childEvent.text}"`
                         : '';
 
-                      return `  - [${child.status.toUpperCase()}] ${child.title}${eventSuffix}`;
+                      return `  - Child task #${child.id}: [${child.status.toUpperCase()}] ${child.title}${eventSuffix}`;
                     })
                     .join('\n');
 
@@ -72,6 +72,10 @@ Decide what to do based on the user message and current task state.
 - ALWAYS ask (CLARIFY) before creating a new task when there are already active/waiting tasks that could match.
 - ALWAYS ask (CLARIFY) before resuming when multiple waiting tasks could match the user's message.
 - ALWAYS ask (CLARIFY) before repeating a completed/failed task.
+- Reopening a waiting task's browser is REOPEN, not RESUME. It does not mean the user has finished login.
+- Use REOPEN when the user asks to open/show/recover the browser for a waiting task. A root task ID is allowed for REOPEN; if multiple children are waiting, clarify which child.
+- Use RESUME only when the user explicitly asks to continue or reports completing the manual checkpoint.
+- Login, signup, passwords, 2FA and CAPTCHA are handled by the user directly in the browser. Never request credentials in chat.
 
 ## Clear intent examples (ACT)
 - "continue the linkedin one" → RESUME specific waiting task
@@ -87,13 +91,14 @@ Decide what to do based on the user message and current task state.
 Output ONLY valid JSON. No markdown, no explanation.
 
 {
-  "decision": "CREATE_NEW" | "RESUME" | "STOP" | "CLARIFY" | "NOTHING",
+  "decision": "CREATE_NEW" | "RESUME" | "REOPEN" | "STOP" | "CLARIFY" | "NOTHING",
   "task_id": null,
   "question": null,
   "new_root": null
 }
 
 For RESUME or STOP: set task_id to the child task id (integer).
+For REOPEN: set task_id to the requested waiting child or its root task id.
 For CLARIFY: set question to the clarifying question string (present 2-3 concrete choices when possible).
 For CREATE_NEW: set new_root with title, prompt, and sub_tasks array.
 For NOTHING: use all nulls.
@@ -124,6 +129,7 @@ type BuildStepPromptProps = {
   remainingActions: number;
   feedback: string;
   snapshot: BrowserSnapshot;
+  userContext: string;
 };
 
 export function buildStepPrompt({
@@ -132,6 +138,7 @@ export function buildStepPrompt({
   remainingActions,
   feedback,
   snapshot,
+  userContext,
 }: BuildStepPromptProps): string {
   return [
     'You are controlling a persistent Playwright browser session to complete a task.',
@@ -140,6 +147,8 @@ export function buildStepPrompt({
     '',
     `Task title: ${task.title}`,
     `Task prompt: ${task.prompt}`,
+    'Persisted user instructions and pasted reference documents (chronological JSON):',
+    userContext,
     `Step: ${step} — Actions remaining: ${remainingActions}`,
     '',
     'Allowed response shapes:',
@@ -160,8 +169,12 @@ export function buildStepPrompt({
     '- Use wait after navigation or actions that trigger loading.',
     '- Use press for keys like Enter, Tab, Escape, ArrowDown.',
     '- Use scroll with deltaY positive for down, negative for up.',
-    '- If login, 2FA, or a CAPTCHA is required, return prompt_user immediately.',
+    '- Navigate to the requested site before handing off login; never claim it is open unless the current snapshot confirms it.',
+    '- Login and signup are manual: never request or enter credentials, passwords, or verification codes. If login, 2FA, or CAPTCHA is required, return prompt_user and ask the user to complete it directly in the browser, then reply to continue.',
+    '- A resume message is not proof of authentication. Inspect the current snapshot; if login is still required, hand back to the user.',
     '- Return final when the task is fully complete.',
+    '- Use the supplied reference-document contents to evaluate results. A local path alone is not document contents. Do not ask for a document again if its text is already in the persisted user context.',
+    '- In the final message, give a simple report: what you accomplished, relevant findings with source URLs, actions taken, and anything unfinished. For job searches include role, company, link, and why each matches. Do not invent results or claim actions that were not performed.',
     '- Do NOT submit or publish anything unless the task explicitly says to.',
     '- Leave the browser tab open when done.',
     '',
