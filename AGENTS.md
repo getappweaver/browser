@@ -2,7 +2,7 @@
 
 Follow the [core instructions](../../AGENTS.md). Read local `README.md` and relevant `docs/` before editing a module. Update those docs when behavior or architecture changes; use Memory for committed code/Markdown discovery when indexed.
 
-Only create or edit `AGENTS.md` when the user explicitly asks for instruction changes. Do not regenerate legacy bottom-up artifacts during ordinary maintenance.
+Only create or edit `AGENTS.md` when the user explicitly asks for instruction changes.
 
 ## Release workflow
 

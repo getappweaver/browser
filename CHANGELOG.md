@@ -4,9 +4,13 @@ All notable changes for each version are listed under the corresponding `v*.*.*`
 Tags and this file are updated by the post-commit hook when you commit with `--patch`, `--minor`, or `--major` (see CONTRIBUTING.md).
 You can also run `bun run release:changelog` to rewrite this file from tags.
 
+## [v1.4.1] - 2026-10-16
+
+- fix: docs (4083a06)
+
 ## [v1.4.0] - 2026-10-07
 
-- chore: required changes for core v14 (e003d88)
+- chore: required changes for core v14 (1aaa539)
 
 ## [v1.3.3] - 2026-09-29
 
