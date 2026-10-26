@@ -4,9 +4,13 @@ All notable changes for each version are listed under the corresponding `v*.*.*`
 Tags and this file are updated by the post-commit hook when you commit with `--patch`, `--minor`, or `--major` (see CONTRIBUTING.md).
 You can also run `bun run release:changelog` to rewrite this file from tags.
 
+## [v1.4.2] - 2026-10-27
+
+- fix: header icon image and placement (c0ca747)
+
 ## [v1.4.1] - 2026-10-16
 
-- fix: docs (4083a06)
+- fix: docs (225b7fa)
 
 ## [v1.4.0] - 2026-10-07
 

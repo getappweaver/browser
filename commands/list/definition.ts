@@ -6,10 +6,12 @@ export const listDefinition = (
 ): SubcommandDefinition => ({
   name: 'list',
   webWidget: {
-    placement: 'header',
+    placement: 'right',
     surface: 'modal',
     label: 'Browser',
     modalTitle: 'Browser tasks',
+    icon: './commands/list/renderers/browser.svg',
+    order: 5,
   },
   summary: 'List all browser tasks and their current status.',
   aliases: [],

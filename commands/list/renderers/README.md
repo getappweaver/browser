@@ -4,6 +4,7 @@
 Plain-text renderer for the /list command output. Formats task hierarchy (root + children) with status labels and event previews for terminal display.
 
 ## Files
+- `browser.svg` - Header widget icon for `/browser list`
 - `text.ts` - Renders browser task list as indented plain text with status brackets and truncated event previews
 
 ## Notes
